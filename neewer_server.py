@@ -52,6 +52,9 @@ class NeewerGL1:
         self.delay = delay
         self.lock = threading.Lock()
         self.state = {"power": "unknown", "brightness": None, "temperature": None}
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("", LIGHT_PORT))
+        self._handshake_bytes = self._build_handshake()
 
     def _guess_ip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -62,24 +65,25 @@ class NeewerGL1:
             s.close()
         return ip
 
-    def _ip_to_handshake_hex(self):
-        ip_hex = self.client_ip.encode("ascii").hex()
-        length = len(self.client_ip)
-        return f"80021000000{length:x}{ip_hex}2e"
+    def _build_handshake(self):
+        header = bytes([0x80, 0x02, 0x10, 0x00, 0x00, len(self.client_ip)])
+        ip_bytes = self.client_ip.encode("ascii")
+        payload = header + ip_bytes
+        checksum = sum(payload) & 0xFF
+        return payload + bytes([checksum])
 
-    def _send_udp(self, hex_data):
-        data = bytes.fromhex(hex_data)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sock.sendto(data, (self.light_ip, LIGHT_PORT))
-        finally:
-            sock.close()
+    def _send_udp(self, data):
+        if isinstance(data, str):
+            data = bytes.fromhex(data)
+        self.sock.sendto(data, (self.light_ip, LIGHT_PORT))
 
     def _handshake(self):
-        hex_cmd = self._ip_to_handshake_hex()
         for _ in range(HANDSHAKE_REPEAT):
-            self._send_udp(hex_cmd)
+            self._send_udp(self._handshake_bytes)
             time.sleep(self.delay)
+        time.sleep(1.5)
+        self._send_udp("8006010188")
+        time.sleep(1.5)
 
     def _build_brightness_temp_hex(self, brightness, temperature):
         prefix = [0x80, 0x05, 0x03, 0x02]
