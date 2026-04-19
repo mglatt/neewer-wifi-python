@@ -55,6 +55,7 @@ class NeewerGL1:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("", LIGHT_PORT))
         self._handshake_bytes = self._build_handshake()
+        self.connected = False
 
     def _guess_ip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -77,13 +78,34 @@ class NeewerGL1:
             data = bytes.fromhex(data)
         self.sock.sendto(data, (self.light_ip, LIGHT_PORT))
 
-    def _handshake(self):
+    def connect(self):
+        """Perform initial handshake + wakeup to establish session."""
+        print(f"  Connecting to light at {self.light_ip}...")
         for _ in range(HANDSHAKE_REPEAT):
             self._send_udp(self._handshake_bytes)
             time.sleep(self.delay)
         time.sleep(1.5)
         self._send_udp("8006010188")
         time.sleep(1.5)
+        self.connected = True
+        print(f"  Connected.")
+
+    def start_heartbeat(self):
+        """Send periodic heartbeats to keep the session alive."""
+        def _loop():
+            while True:
+                try:
+                    self._send_udp("80040084")
+                except Exception:
+                    pass
+                time.sleep(2)
+        t = threading.Thread(target=_loop, daemon=True)
+        t.start()
+        print(f"  Heartbeat running.")
+
+    def _ensure_connected(self):
+        if not self.connected:
+            self.connect()
 
     def _build_brightness_temp_hex(self, brightness, temperature):
         prefix = [0x80, 0x05, 0x03, 0x02]
@@ -95,28 +117,25 @@ class NeewerGL1:
 
     def power_on(self):
         with self.lock:
-            self._handshake()
+            self._ensure_connected()
             self._send_udp("800502010189")
             self.state["power"] = "on"
-            time.sleep(self.delay)
 
     def power_off(self):
         with self.lock:
-            self._handshake()
+            self._ensure_connected()
             self._send_udp("800502010088")
             self.state["power"] = "off"
             self.state["brightness"] = None
             self.state["temperature"] = None
-            time.sleep(self.delay)
 
     def set_brightness_temp(self, brightness, temperature):
         with self.lock:
-            self._handshake()
+            self._ensure_connected()
             hex_cmd = self._build_brightness_temp_hex(brightness, temperature)
             self._send_udp(hex_cmd)
             self.state["brightness"] = brightness
-            self.state["temperature"] = temperature * 100  # display as Kelvin
-            time.sleep(self.delay)
+            self.state["temperature"] = temperature * 100
 
     def apply_preset(self, name):
         preset = PRESETS.get(name)
@@ -228,6 +247,9 @@ def main():
     print(f"  Client IP: {light.client_ip}")
     print(f"  Listening: http://0.0.0.0:{args.port}")
     print(f"  Endpoints: /api/on /api/off /api/set?bri=&temp= /api/preset/{{name}} /api/status")
+
+    light.connect()
+    light.start_heartbeat()
     print()
 
     try:
