@@ -91,17 +91,25 @@ class NeewerGL1:
         print(f"  Connected.")
 
     def start_heartbeat(self):
-        """Send periodic heartbeats to keep the session alive."""
+        """Send periodic heartbeats and re-handshake every 30 minutes."""
         def _loop():
+            counter = 0
             while True:
                 try:
                     self._send_udp("80040084")
-                except Exception:
-                    pass
+                    counter += 1
+                    if counter >= 900:  # every 30 min (900 * 2 sec)
+                        print(f"[{time.strftime('%H:%M:%S')}] Periodic re-handshake")
+                        self.connected = False
+                        self.connect()
+                        counter = 0
+                except Exception as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] Heartbeat error: {e}")
+                    self.connected = False
                 time.sleep(2)
         t = threading.Thread(target=_loop, daemon=True)
         t.start()
-        print(f"  Heartbeat running.")
+        print(f"  Heartbeat running (re-handshake every 30 min).")
 
     def _ensure_connected(self):
         if not self.connected:
@@ -212,6 +220,11 @@ class GL1Handler(BaseHTTPRequestHandler):
                 "state": self.light.state,
                 "presets": list(PRESETS.keys()),
             })
+
+        elif path == "/api/reconnect":
+            self.light.connected = False
+            self.light.connect()
+            self._respond(200, {"action": "reconnect", "state": self.light.state})
 
         elif path == "/api/presets":
             self._respond(200, {"presets": PRESETS})
