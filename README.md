@@ -68,10 +68,11 @@ GET /api/preset/off           → Turn light off
 GET /api/presets               → List all available presets and their configs
 ```
 
-### Status
+### Status and Maintenance
 
 ```
 GET /api/status                → Current state (tracked locally, not read from light)
+GET /api/reconnect             → Force a fresh handshake (useful if session goes stale)
 ```
 
 ## Example responses
@@ -138,18 +139,44 @@ sudo systemctl start neewer_server
 
 ## How it works
 
-The GL1 Pro listens for UDP packets on port 5052. The protocol (documented by [braintapper](https://github.com/braintapper/neewer-gl1)):
+The GL1 Pro listens for UDP packets on port 5052. The protocol was originally documented by [braintapper](https://github.com/braintapper/neewer-gl1) for the non-Pro GL1. The GL1 Pro uses the same command format but requires a checksummed handshake and a persistent heartbeat to maintain the session.
 
-1. **Handshake** — send your machine's IP encoded as ASCII hex, three times, to register as a controller
-2. **Power on** — send `800502010189`
-3. **Power off** — send `800502010088`
-4. **Brightness + temp** — send `80 05 03 02 {brightness} {temp} {checksum}`, where checksum is the sum of all bytes masked to 8 bits
+### Session lifecycle
 
-The light is fire-and-forget — it never responds. This server tracks state locally but has no way to read the light's actual state (if you change settings via the physical controls, state will be out of sync).
+1. **Handshake** — send `80 02 10 00 00 {ip_length} {ip_as_ascii_hex} {checksum}` three times, where checksum is `sum(all_preceding_bytes) & 0xFF`. The server binds to UDP port 5052 (same as the light) so packets originate from the correct source port.
+2. **Wakeup** — send `80 06 01 01 88` to activate the command channel.
+3. **Heartbeat** — send `80 04 00 84` every 2 seconds to keep the session alive. The light responds with `80 03 00 83`. If heartbeats stop, the light drops the session and ignores further commands until a new handshake is performed.
+4. **Auto re-handshake** — the server automatically re-handshakes every 30 minutes as a safety net against session staleness.
+
+### Commands
+
+- **Power on**: `80 05 02 01 01 89`
+- **Power off**: `80 05 02 01 00 88`
+- **Brightness + temp**: `80 05 03 02 {brightness} {temp} {checksum}`, where brightness is 1–100, temp is 29–70, and checksum is `sum(all_bytes) & 0xFF`
+
+### Important notes
+
+- The light never reports its own state. If you change settings via the physical controls, the server's tracked state will be out of sync.
+- Only one controller can hold the session at a time. If the Neewer app is running on your phone or computer, it will compete for the session. Close it before using this server.
+- The server's source IP is embedded in the handshake. Any machine on the LAN can run it — the checksum adapts automatically.
 
 ## Security
 
 This server has no authentication. It binds to `0.0.0.0` and accepts requests from any IP. Don't expose it to the internet.
+
+## Troubleshooting
+
+**Light not responding after working previously?**
+Hit `/api/reconnect` or restart the service. The session may have gone stale.
+
+**Port 5052 already in use?**
+Another instance or the old BLE service may still be running. Kill it: `sudo fuser -k 5052/udp`
+
+**Light not on WiFi?**
+The initial WiFi setup must be done via the Neewer mobile app (one-time). After that the light remembers the network across power cycles.
+
+**Neewer app is also connected?**
+Close it. Only one controller can hold the UDP session at a time.
 
 ## License
 
